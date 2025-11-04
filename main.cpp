@@ -6,12 +6,15 @@
 #include <assimp/Importer.hpp>
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
+#define STB_IMAGE_IMPLEMENTATION
+#include <stb/stb_image.h>
 
 #include <iostream>
 #include <vector>
 #include <map>
 #include <string>
 #include <memory>
+#include <algorithm>
 
 // Shader sources
 const char* vertexShaderSource = R"(
@@ -66,12 +69,23 @@ in vec2 TexCoords;
 in vec3 Normal;
 in vec3 FragPos;
 
+uniform sampler2D diffuseTexture;
 uniform vec3 lightPos = vec3(0.0, 5.0, 0.0);
 uniform vec3 lightColor = vec3(1.0, 1.0, 1.0);
+uniform bool useTexture = true;
 uniform vec3 objectColor = vec3(0.7, 0.5, 0.3);
 
 void main()
 {
+    vec4 textureColor;
+    if(useTexture) {
+        textureColor = texture(diffuseTexture, TexCoords);
+        if(textureColor.a < 0.1) 
+            discard;
+    } else {
+        textureColor = vec4(objectColor, 1.0);
+    }
+    
     // Ambient
     float ambientStrength = 0.3;
     vec3 ambient = ambientStrength * lightColor;
@@ -82,12 +96,18 @@ void main()
     float diff = max(dot(norm, lightDir), 0.0);
     vec3 diffuse = diff * lightColor;
     
-    vec3 result = (ambient + diffuse) * objectColor;
-    FragColor = vec4(result, 1.0);
+    vec3 result = (ambient + diffuse) * textureColor.rgb;
+    FragColor = vec4(result, textureColor.a);
 }
 )";
 
-// Bone structure (keep all your existing Bone, Mesh, Animation, Model, Animator classes the same)
+struct Texture {
+    unsigned int id;
+    std::string type;
+    std::string path;
+    std::string name; // Add name for better matching
+};
+
 struct BoneInfo {
     int id;
     glm::mat4 offset;
@@ -253,18 +273,47 @@ class Mesh {
 public:
     std::vector<Vertex> vertices;
     std::vector<unsigned int> indices;
+    std::vector<Texture> textures;
     unsigned int VAO, VBO, EBO;
 
-    Mesh(std::vector<Vertex> vertices, std::vector<unsigned int> indices) {
+    Mesh(std::vector<Vertex> vertices, std::vector<unsigned int> indices,
+        std::vector<Texture> textures = {}) {
         this->vertices = vertices;
         this->indices = indices;
+        this->textures = textures;
         setupMesh();
     }
 
-    void Draw() {
+    void Draw(unsigned int shaderProgram) {
+        // Bind textures
+        unsigned int diffuseNr = 1;
+        bool hasDiffuseTexture = false;
+
+        for (unsigned int i = 0; i < textures.size(); i++) {
+            glActiveTexture(GL_TEXTURE0 + i);
+            std::string number;
+            std::string name = textures[i].type;
+
+            if (name == "texture_diffuse") {
+                number = std::to_string(diffuseNr++);
+                hasDiffuseTexture = true;
+                // Set the main diffuse texture uniform
+                glUniform1i(glGetUniformLocation(shaderProgram, "diffuseTexture"), i);
+            }
+
+            glUniform1i(glGetUniformLocation(shaderProgram, (name + number).c_str()), i);
+            glBindTexture(GL_TEXTURE_2D, textures[i].id);
+        }
+
+        // Set useTexture uniform
+        glUniform1i(glGetUniformLocation(shaderProgram, "useTexture"), hasDiffuseTexture);
+
+        // Draw mesh
         glBindVertexArray(VAO);
         glDrawElements(GL_TRIANGLES, indices.size(), GL_UNSIGNED_INT, 0);
         glBindVertexArray(0);
+
+        glActiveTexture(GL_TEXTURE0);
     }
 
 private:
@@ -356,6 +405,8 @@ public:
     glm::vec3 modelSize = glm::vec3(1.0f);
     glm::vec3 modelCenter = glm::vec3(0.0f);
     std::unique_ptr<Animation> animation;
+    std::string directory;
+    std::map<std::string, Texture> embeddedTextures; // Store all embedded textures by filename
 
     Model(const std::string& path) {
         loadModel(path);
@@ -363,9 +414,9 @@ public:
         calculateModelDimensions();
     }
 
-    void Draw() {
+    void Draw(unsigned int shaderProgram) {
         for (auto& mesh : meshes) {
-            mesh.Draw();
+            mesh.Draw(shaderProgram);
         }
     }
 
@@ -385,8 +436,12 @@ public:
 
 private:
     Assimp::Importer m_Importer;
+    std::vector<Texture> textures_loaded;
 
     void loadModel(const std::string& path) {
+        size_t lastSlash = path.find_last_of("/\\");
+        directory = (lastSlash == std::string::npos) ? "" : path.substr(0, lastSlash);
+
         m_Scene = m_Importer.ReadFile(path,
             aiProcess_Triangulate |
             aiProcess_FlipUVs |
@@ -398,6 +453,9 @@ private:
             return;
         }
 
+        // Load all embedded textures first
+        loadEmbeddedTextures();
+
         if (m_Scene->HasAnimations()) {
             std::cout << "Model has " << m_Scene->mNumAnimations << " animations" << std::endl;
             animation = std::make_unique<Animation>(m_Scene, "MixamoRun");
@@ -407,6 +465,41 @@ private:
         }
 
         processNode(m_Scene->mRootNode, m_Scene);
+    }
+
+    void loadEmbeddedTextures() {
+        if (m_Scene->HasTextures()) {
+            std::cout << "Loading " << m_Scene->mNumTextures << " embedded textures..." << std::endl;
+            for (unsigned int i = 0; i < m_Scene->mNumTextures; i++) {
+                const aiTexture* texture = m_Scene->mTextures[i];
+                if (texture) {
+                    std::string textureName = texture->mFilename.C_Str();
+                    std::cout << "Loading embedded texture: " << textureName << std::endl;
+
+                    Texture embeddedTexture;
+                    embeddedTexture.id = TextureFromEmbedded(texture);
+                    embeddedTexture.type = "texture_diffuse";
+                    embeddedTexture.path = textureName;
+                    embeddedTexture.name = getTextureName(textureName);
+
+                    embeddedTextures[embeddedTexture.name] = embeddedTexture;
+                    textures_loaded.push_back(embeddedTexture);
+
+                    std::cout << "Successfully loaded embedded texture: " << textureName << std::endl;
+                }
+            }
+        }
+    }
+
+    std::string getTextureName(const std::string& path) {
+        // Extract just the filename without path and extension
+        size_t lastSlash = path.find_last_of("/\\");
+        size_t lastDot = path.find_last_of(".");
+        std::string name = path.substr(lastSlash + 1, lastDot - lastSlash - 1);
+
+        // Convert to lowercase for easier matching
+        std::transform(name.begin(), name.end(), name.begin(), ::tolower);
+        return name;
     }
 
     void processNode(aiNode* node, const aiScene* scene) {
@@ -423,6 +516,7 @@ private:
     Mesh processMesh(aiMesh* mesh, const aiScene* scene) {
         std::vector<Vertex> vertices;
         std::vector<unsigned int> indices;
+        std::vector<Texture> textures;
 
         for (unsigned int i = 0; i < mesh->mNumVertices; i++) {
             Vertex vertex;
@@ -447,6 +541,14 @@ private:
             for (unsigned int j = 0; j < face.mNumIndices; j++) {
                 indices.push_back(face.mIndices[j]);
             }
+        }
+
+        // Process materials and textures
+        if (mesh->mMaterialIndex >= 0) {
+            aiMaterial* material = scene->mMaterials[mesh->mMaterialIndex];
+            std::vector<Texture> diffuseMaps = loadMaterialTextures(material,
+                aiTextureType_DIFFUSE, "texture_diffuse");
+            textures.insert(textures.end(), diffuseMaps.begin(), diffuseMaps.end());
         }
 
         if (mesh->HasBones()) {
@@ -481,7 +583,188 @@ private:
             }
         }
 
-        return Mesh(vertices, indices);
+        return Mesh(vertices, indices, textures);
+    }
+
+    std::vector<Texture> loadMaterialTextures(aiMaterial* mat, aiTextureType type, std::string typeName) {
+        std::vector<Texture> textures;
+
+        unsigned int textureCount = mat->GetTextureCount(type);
+        std::cout << "Material has " << textureCount << " textures of type " << typeName << std::endl;
+
+        for (unsigned int i = 0; i < textureCount; i++) {
+            aiString str;
+            mat->GetTexture(type, i, &str);
+            std::string texturePath = str.C_Str();
+            std::string textureName = getTextureName(texturePath);
+
+            std::cout << "Looking for texture: " << texturePath << " (name: " << textureName << ")" << std::endl;
+
+            // First try to find in embedded textures
+            if (embeddedTextures.find(textureName) != embeddedTextures.end()) {
+                std::cout << "Found matching embedded texture: " << textureName << std::endl;
+                textures.push_back(embeddedTextures[textureName]);
+                continue;
+            }
+
+            // Check if already loaded as external texture
+            bool skip = false;
+            for (unsigned int j = 0; j < textures_loaded.size(); j++) {
+                if (std::strcmp(textures_loaded[j].path.data(), texturePath.c_str()) == 0) {
+                    textures.push_back(textures_loaded[j]);
+                    skip = true;
+                    std::cout << "Texture already loaded, reusing: " << texturePath << std::endl;
+                    break;
+                }
+            }
+
+            if (!skip) {
+                // Try to load as external texture
+                Texture texture;
+                texture.id = TextureFromFile(texturePath, directory);
+                texture.type = typeName;
+                texture.path = texturePath;
+                texture.name = textureName;
+                textures.push_back(texture);
+                textures_loaded.push_back(texture);
+            }
+        }
+
+        // If no textures found and we have embedded textures, use the first available one
+        if (textures.empty() && !embeddedTextures.empty()) {
+            std::cout << "No specific texture found, using first available embedded texture" << std::endl;
+            textures.push_back(embeddedTextures.begin()->second);
+        }
+
+        return textures;
+    }
+
+    unsigned int TextureFromEmbedded(const aiTexture* embeddedTexture) {
+        unsigned int textureID;
+        glGenTextures(1, &textureID);
+        glBindTexture(GL_TEXTURE_2D, textureID);
+
+        if (embeddedTexture->mHeight == 0) {
+            // Compressed texture data (most common case for embedded FBX)
+            int width, height, nrComponents;
+            unsigned char* data = stbi_load_from_memory(
+                reinterpret_cast<unsigned char*>(embeddedTexture->pcData),
+                embeddedTexture->mWidth,
+                &width, &height, &nrComponents, 0);
+
+            if (data) {
+                GLenum format;
+                if (nrComponents == 1) format = GL_RED;
+                else if (nrComponents == 3) format = GL_RGB;
+                else if (nrComponents == 4) format = GL_RGBA;
+
+                glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
+                glGenerateMipmap(GL_TEXTURE_2D);
+                stbi_image_free(data);
+
+                std::cout << "Embedded texture dimensions: " << width << "x" << height << ", components: " << nrComponents << std::endl;
+            }
+            else {
+                std::cout << "Failed to load embedded texture using stbi_load_from_memory" << std::endl;
+                createDefaultTexture(textureID);
+            }
+        }
+        else {
+            std::cout << "Uncompressed embedded texture format not supported" << std::endl;
+            createDefaultTexture(textureID);
+        }
+
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+        return textureID;
+    }
+
+    unsigned int TextureFromFile(const std::string& filename, const std::string& directory) {
+        // Try multiple possible locations
+        std::vector<std::string> possiblePaths = {
+            directory + '/' + filename,
+            filename,
+            directory + "/../textures/" + filename,
+            "textures/" + filename,
+            "../textures/" + filename
+        };
+
+        unsigned int textureID;
+        glGenTextures(1, &textureID);
+
+        int width, height, nrComponents;
+        unsigned char* data = nullptr;
+        std::string successfulPath;
+
+        for (const auto& path : possiblePaths) {
+            stbi_set_flip_vertically_on_load(true);
+            data = stbi_load(path.c_str(), &width, &height, &nrComponents, 0);
+            if (data) {
+                successfulPath = path;
+                break;
+            }
+        }
+
+        if (data) {
+            GLenum format;
+            if (nrComponents == 1) format = GL_RED;
+            else if (nrComponents == 3) format = GL_RGB;
+            else if (nrComponents == 4) format = GL_RGBA;
+
+            glBindTexture(GL_TEXTURE_2D, textureID);
+            glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
+            glGenerateMipmap(GL_TEXTURE_2D);
+
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+            stbi_image_free(data);
+            std::cout << "Loaded external texture: " << successfulPath
+                << " (" << width << "x" << height << ")" << std::endl;
+        }
+        else {
+            std::cout << "Texture failed to load at all attempted paths for: " << filename << std::endl;
+            createDefaultTexture(textureID);
+        }
+
+        return textureID;
+    }
+
+    void createDefaultTexture(unsigned int textureID) {
+        // Create a colorful default texture
+        const int texSize = 64;
+        std::vector<unsigned char> defaultData(texSize * texSize * 3);
+
+        for (int y = 0; y < texSize; y++) {
+            for (int x = 0; x < texSize; x++) {
+                int index = (y * texSize + x) * 3;
+
+                // Create a colorful pattern
+                float r = (sin(x * 0.3f) * 0.5f + 0.5f) * 255;
+                float g = (cos(y * 0.3f) * 0.5f + 0.5f) * 255;
+                float b = (sin((x + y) * 0.1f) * 0.5f + 0.5f) * 255;
+
+                defaultData[index] = static_cast<unsigned char>(r);
+                defaultData[index + 1] = static_cast<unsigned char>(g);
+                defaultData[index + 2] = static_cast<unsigned char>(b);
+            }
+        }
+
+        glBindTexture(GL_TEXTURE_2D, textureID);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, texSize, texSize, 0, GL_RGB, GL_UNSIGNED_BYTE, defaultData.data());
+        glGenerateMipmap(GL_TEXTURE_2D);
+
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+        std::cout << "Created default colorful texture" << std::endl;
     }
 
     void calculateModelDimensions() {
@@ -616,7 +899,7 @@ int main() {
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
     // Create window
-    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "Mixamo FBX Animation - Controlled Movement", NULL, NULL);
+    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "Mixamo FBX Animation - Textured Character", NULL, NULL);
     if (window == NULL) {
         std::cout << "Failed to create GLFW window" << std::endl;
         glfwTerminate();
@@ -674,8 +957,12 @@ int main() {
     glDeleteShader(fragmentShader);
 
     // Load your Mixamo character model
-    std::cout << "Loading character.fbx..." << std::endl;
-    Model character("models/run.fbx");
+    std::cout << "Loading Mixamo Character Model..." << std::endl;
+
+    std::string modelPath = "models/boy_my.fbx";
+
+    Model character(modelPath);
+
     std::cout << "Model loaded with " << character.meshes.size() << " meshes and "
         << character.boneInfoMap.size() << " bones" << std::endl;
 
@@ -704,7 +991,7 @@ int main() {
         }
 
         // Render
-        glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+        glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         glUseProgram(shaderProgram);
@@ -739,7 +1026,7 @@ int main() {
         }
 
         // Draw character
-        character.Draw();
+        character.Draw(shaderProgram);
 
         // Swap buffers and poll events
         glfwSwapBuffers(window);
