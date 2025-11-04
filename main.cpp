@@ -87,14 +87,13 @@ void main()
 }
 )";
 
-// Bone structure
+// Bone structure (keep all your existing Bone, Mesh, Animation, Model, Animator classes the same)
 struct BoneInfo {
     int id;
     glm::mat4 offset;
     glm::mat4 finalTransformation;
 };
 
-// Vertex structure
 struct Vertex {
     glm::vec3 Position;
     glm::vec3 Normal;
@@ -103,7 +102,6 @@ struct Vertex {
     glm::vec4 Weights = glm::vec4(0.0f);
 };
 
-// Animation Keyframes
 struct KeyPosition {
     glm::vec3 position;
     float timeStamp;
@@ -119,7 +117,6 @@ struct KeyScale {
     float timeStamp;
 };
 
-// Bone class with animation data
 class Bone {
 private:
     std::vector<KeyPosition> m_Positions;
@@ -252,7 +249,6 @@ private:
     }
 };
 
-// Mesh class
 class Mesh {
 public:
     std::vector<Vertex> vertices;
@@ -285,23 +281,14 @@ private:
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(unsigned int), &indices[0], GL_STATIC_DRAW);
 
-        // Vertex positions
         glEnableVertexAttribArray(0);
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)0);
-
-        // Vertex normals
         glEnableVertexAttribArray(1);
         glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, Normal));
-
-        // Vertex texture coords
         glEnableVertexAttribArray(2);
         glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, TexCoords));
-
-        // Bone IDs
         glEnableVertexAttribArray(3);
         glVertexAttribIPointer(3, 4, GL_INT, sizeof(Vertex), (void*)offsetof(Vertex, BoneIDs));
-
-        // Weights
         glEnableVertexAttribArray(4);
         glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, Weights));
 
@@ -309,7 +296,6 @@ private:
     }
 };
 
-// Animation class
 class Animation {
 public:
     float m_Duration;
@@ -318,7 +304,7 @@ public:
     std::map<std::string, BoneInfo> m_BoneInfoMap;
 
     Animation(const aiScene* scene, const std::string& animationName) {
-        aiAnimation* animation = scene->mAnimations[0]; // Get first animation (Mixamo usually has one)
+        aiAnimation* animation = scene->mAnimations[0];
         m_Duration = animation->mDuration;
         m_TicksPerSecond = animation->mTicksPerSecond != 0 ? animation->mTicksPerSecond : 25.0f;
 
@@ -342,13 +328,11 @@ private:
     void ReadMissingBones(const aiAnimation* animation) {
         int boneCount = 0;
 
-        // Read channels (bones engaged in an animation and their keyframes)
         for (int i = 0; i < animation->mNumChannels; i++) {
             aiNodeAnim* channel = animation->mChannels[i];
             std::string boneName = channel->mNodeName.C_Str();
 
             if (m_BoneInfoMap.find(boneName) == m_BoneInfoMap.end()) {
-                // Create bone info if it doesn't exist
                 BoneInfo boneInfo;
                 boneInfo.id = boneCount;
                 boneInfo.offset = glm::mat4(1.0f);
@@ -363,7 +347,6 @@ private:
     }
 };
 
-// Model class to load FBX with Assimp
 class Model {
 public:
     std::vector<Mesh> meshes;
@@ -399,8 +382,8 @@ public:
         return animation != nullptr;
     }
     const aiScene* m_Scene;
+
 private:
-  
     Assimp::Importer m_Importer;
 
     void loadModel(const std::string& path) {
@@ -415,7 +398,6 @@ private:
             return;
         }
 
-        // Load animation if present
         if (m_Scene->HasAnimations()) {
             std::cout << "Model has " << m_Scene->mNumAnimations << " animations" << std::endl;
             animation = std::make_unique<Animation>(m_Scene, "MixamoRun");
@@ -442,29 +424,16 @@ private:
         std::vector<Vertex> vertices;
         std::vector<unsigned int> indices;
 
-        // Process vertices
         for (unsigned int i = 0; i < mesh->mNumVertices; i++) {
             Vertex vertex;
-
-            vertex.Position = glm::vec3(
-                mesh->mVertices[i].x,
-                mesh->mVertices[i].y,
-                mesh->mVertices[i].z
-            );
+            vertex.Position = glm::vec3(mesh->mVertices[i].x, mesh->mVertices[i].y, mesh->mVertices[i].z);
 
             if (mesh->HasNormals()) {
-                vertex.Normal = glm::vec3(
-                    mesh->mNormals[i].x,
-                    mesh->mNormals[i].y,
-                    mesh->mNormals[i].z
-                );
+                vertex.Normal = glm::vec3(mesh->mNormals[i].x, mesh->mNormals[i].y, mesh->mNormals[i].z);
             }
 
             if (mesh->mTextureCoords[0]) {
-                vertex.TexCoords = glm::vec2(
-                    mesh->mTextureCoords[0][i].x,
-                    mesh->mTextureCoords[0][i].y
-                );
+                vertex.TexCoords = glm::vec2(mesh->mTextureCoords[0][i].x, mesh->mTextureCoords[0][i].y);
             }
             else {
                 vertex.TexCoords = glm::vec2(0.0f, 0.0f);
@@ -473,7 +442,6 @@ private:
             vertices.push_back(vertex);
         }
 
-        // Process indices
         for (unsigned int i = 0; i < mesh->mNumFaces; i++) {
             aiFace face = mesh->mFaces[i];
             for (unsigned int j = 0; j < face.mNumIndices; j++) {
@@ -481,7 +449,6 @@ private:
             }
         }
 
-        // Process bones
         if (mesh->HasBones()) {
             std::cout << "Processing " << mesh->mNumBones << " bones for mesh" << std::endl;
             for (unsigned int i = 0; i < mesh->mNumBones; i++) {
@@ -548,7 +515,6 @@ private:
     }
 };
 
-// Animator class
 class Animator {
 private:
     std::vector<glm::mat4> m_FinalBoneMatrices;
@@ -613,15 +579,34 @@ private:
 // Function prototypes
 void framebuffer_size_callback(GLFWwindow* window, int width, int height);
 void processInput(GLFWwindow* window);
+void mouse_callback(GLFWwindow* window, double xpos, double ypos);
+void scroll_callback(GLFWwindow* window, double xoffset, double yoffset);
 
 // Settings
 const unsigned int SCR_WIDTH = 800;
 const unsigned int SCR_HEIGHT = 600;
 
-// Camera settings
+// Camera
 glm::vec3 cameraPos = glm::vec3(0.0f, 1.0f, 5.0f);
 glm::vec3 cameraFront = glm::vec3(0.0f, 0.0f, -1.0f);
 glm::vec3 cameraUp = glm::vec3(0.0f, 1.0f, 0.0f);
+
+// Timing
+float deltaTime = 0.0f;
+float lastFrame = 0.0f;
+
+// Mouse input
+bool firstMouse = true;
+float lastX = SCR_WIDTH / 2.0f;
+float lastY = SCR_HEIGHT / 2.0f;
+float yaw = -90.0f;
+float pitch = 0.0f;
+
+// Character control
+glm::vec3 characterPosition = glm::vec3(0.0f, 0.0f, 0.0f);
+float characterRotation = 0.0f;
+float movementSpeed = 3.0f;
+float rotationSpeed = 60.0f;
 
 int main() {
     // Initialize GLFW
@@ -631,7 +616,7 @@ int main() {
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
     // Create window
-    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "Mixamo FBX Animation", NULL, NULL);
+    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "Mixamo FBX Animation - Controlled Movement", NULL, NULL);
     if (window == NULL) {
         std::cout << "Failed to create GLFW window" << std::endl;
         glfwTerminate();
@@ -639,6 +624,11 @@ int main() {
     }
     glfwMakeContextCurrent(window);
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
+    glfwSetCursorPosCallback(window, mouse_callback);
+    glfwSetScrollCallback(window, scroll_callback);
+
+    // Capture mouse
+    glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 
     // Load OpenGL function pointers
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
@@ -698,22 +688,17 @@ int main() {
     float autoScale = character.getScaleFactor();
     std::cout << "Using auto-scale factor: " << autoScale << std::endl;
 
-    // Adjust camera based on model size
-    float modelHeight = character.modelSize.y * autoScale;
-    cameraPos = glm::vec3(0.0f, modelHeight * 0.5f, modelHeight * 2.0f);
-
     // Render loop
-    float lastFrame = 0.0f;
     while (!glfwWindowShouldClose(window)) {
         // Calculate delta time
         float currentFrame = glfwGetTime();
-        float deltaTime = currentFrame - lastFrame;
+        deltaTime = currentFrame - lastFrame;
         lastFrame = currentFrame;
 
         // Input
         processInput(window);
 
-        // Update animation (plays automatically if available)
+        // Update animation
         if (character.HasAnimation()) {
             animator.UpdateAnimation(deltaTime, character);
         }
@@ -728,15 +713,14 @@ int main() {
         glm::mat4 projection = glm::perspective(glm::radians(45.0f),
             (float)SCR_WIDTH / (float)SCR_HEIGHT,
             0.1f, 100.0f);
-        glm::mat4 view = glm::lookAt(cameraPos,
-            glm::vec3(0.0f, character.modelCenter.y * autoScale, 0.0f),
-            cameraUp);
+        glm::mat4 view = glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp);
 
-        // Create model matrix with automatic scaling
+        // Create model matrix with character control
         glm::mat4 model = glm::mat4(1.0f);
-        model = glm::translate(model, -character.getCenter() * autoScale);
+        model = glm::translate(model, characterPosition);
         model = glm::scale(model, glm::vec3(autoScale));
-        model = glm::rotate(model, (float)glfwGetTime() * 0.3f, glm::vec3(0.0f, 1.0f, 0.0f));
+        model = glm::rotate(model, glm::radians(characterRotation), glm::vec3(0.0f, 1.0f, 0.0f));
+        model = glm::translate(model, -character.getCenter()); // Center the model
 
         // Set matrices
         glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), 1, GL_FALSE,
@@ -769,6 +753,65 @@ int main() {
 void processInput(GLFWwindow* window) {
     if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
         glfwSetWindowShouldClose(window, true);
+
+    // Character movement
+    float cameraSpeed = movementSpeed * deltaTime;
+    float rotationSpeedRad = glm::radians(rotationSpeed) * deltaTime;
+
+    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
+        characterPosition += cameraSpeed * glm::vec3(sin(glm::radians(characterRotation)), 0.0f, cos(glm::radians(characterRotation)));
+    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
+        characterPosition -= cameraSpeed * glm::vec3(sin(glm::radians(characterRotation)), 0.0f, cos(glm::radians(characterRotation)));
+    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
+        characterRotation += rotationSpeed;
+    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
+        characterRotation -= rotationSpeed;
+
+    // Camera movement (free look)
+    float cameraMoveSpeed = 5.0f * deltaTime;
+    if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS)
+        cameraPos += cameraMoveSpeed * cameraFront;
+    if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS)
+        cameraPos -= cameraMoveSpeed * cameraFront;
+    if (glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS)
+        cameraPos -= glm::normalize(glm::cross(cameraFront, cameraUp)) * cameraMoveSpeed;
+    if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS)
+        cameraPos += glm::normalize(glm::cross(cameraFront, cameraUp)) * cameraMoveSpeed;
+}
+
+void mouse_callback(GLFWwindow* window, double xpos, double ypos) {
+    if (firstMouse) {
+        lastX = xpos;
+        lastY = ypos;
+        firstMouse = false;
+    }
+
+    float xoffset = xpos - lastX;
+    float yoffset = lastY - ypos;
+    lastX = xpos;
+    lastY = ypos;
+
+    float sensitivity = 0.1f;
+    xoffset *= sensitivity;
+    yoffset *= sensitivity;
+
+    yaw += xoffset;
+    pitch += yoffset;
+
+    if (pitch > 89.0f)
+        pitch = 89.0f;
+    if (pitch < -89.0f)
+        pitch = -89.0f;
+
+    glm::vec3 front;
+    front.x = cos(glm::radians(yaw)) * cos(glm::radians(pitch));
+    front.y = sin(glm::radians(pitch));
+    front.z = sin(glm::radians(yaw)) * cos(glm::radians(pitch));
+    cameraFront = glm::normalize(front);
+}
+
+void scroll_callback(GLFWwindow* window, double xoffset, double yoffset) {
+    // Optional: implement zoom if needed
 }
 
 void framebuffer_size_callback(GLFWwindow* window, int width, int height) {
