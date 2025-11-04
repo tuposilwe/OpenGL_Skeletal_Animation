@@ -24,10 +24,13 @@ layout (location = 1) in vec3 aNormal;
 layout (location = 2) in vec2 aTexCoords;
 layout (location = 3) in ivec4 aBoneIDs;
 layout (location = 4) in vec4 aWeights;
+layout (location = 5) in vec3 aTangent;
+layout (location = 6) in vec3 aBitangent;
 
 out vec2 TexCoords;
 out vec3 Normal;
 out vec3 FragPos;
+out mat3 TBN;
 
 uniform mat4 projection;
 uniform mat4 view;
@@ -58,6 +61,12 @@ void main()
     FragPos = vec3(model * vec4(aPos, 1.0));
     Normal = mat3(transpose(inverse(model))) * aNormal;
     TexCoords = aTexCoords;
+    
+    // Normal mapping
+    vec3 T = normalize(mat3(model) * aTangent);
+    vec3 B = normalize(mat3(model) * aBitangent);
+    vec3 N = normalize(mat3(model) * aNormal);
+    TBN = mat3(T, B, N);
 }
 )";
 
@@ -68,22 +77,56 @@ out vec4 FragColor;
 in vec2 TexCoords;
 in vec3 Normal;
 in vec3 FragPos;
+in mat3 TBN;
 
+// Texture samplers
 uniform sampler2D diffuseTexture;
+uniform sampler2D normalTexture;
+uniform sampler2D specularTexture;
+
+// Lighting uniforms
 uniform vec3 lightPos = vec3(0.0, 5.0, 0.0);
 uniform vec3 lightColor = vec3(1.0, 1.0, 1.0);
-uniform bool useTexture = true;
+uniform vec3 viewPos;
+
+// Material properties
+uniform bool useDiffuseTexture = true;
+uniform bool useNormalTexture = true;
+uniform bool useSpecularTexture = true;
 uniform vec3 objectColor = vec3(0.7, 0.5, 0.3);
+uniform float shininess = 32.0;
 
 void main()
 {
-    vec4 textureColor;
-    if(useTexture) {
-        textureColor = texture(diffuseTexture, TexCoords);
-        if(textureColor.a < 0.1) 
+    // Diffuse color
+    vec4 diffuseColor;
+    if(useDiffuseTexture) {
+        diffuseColor = texture(diffuseTexture, TexCoords);
+        if(diffuseColor.a < 0.1) 
             discard;
     } else {
-        textureColor = vec4(objectColor, 1.0);
+        diffuseColor = vec4(objectColor, 1.0);
+    }
+    
+    // Normal mapping
+    vec3 normal;
+    if(useNormalTexture) {
+        // Get normal from normal map in [0,1] range
+        normal = texture(normalTexture, TexCoords).rgb;
+        // Transform normal vector to range [-1,1]
+        normal = normalize(normal * 2.0 - 1.0);
+        // Transform normal from tangent space to world space
+        normal = normalize(TBN * normal);
+    } else {
+        normal = normalize(Normal);
+    }
+    
+    // Specular map
+    float specularStrength;
+    if(useSpecularTexture) {
+        specularStrength = texture(specularTexture, TexCoords).r;
+    } else {
+        specularStrength = 0.5;
     }
     
     // Ambient
@@ -91,13 +134,19 @@ void main()
     vec3 ambient = ambientStrength * lightColor;
     
     // Diffuse
-    vec3 norm = normalize(Normal);
     vec3 lightDir = normalize(lightPos - FragPos);
-    float diff = max(dot(norm, lightDir), 0.0);
+    float diff = max(dot(normal, lightDir), 0.0);
     vec3 diffuse = diff * lightColor;
     
-    vec3 result = (ambient + diffuse) * textureColor.rgb;
-    FragColor = vec4(result, textureColor.a);
+    // Specular
+    vec3 viewDir = normalize(viewPos - FragPos);
+    vec3 reflectDir = reflect(-lightDir, normal);
+    float spec = pow(max(dot(viewDir, reflectDir), 0.0), shininess);
+    vec3 specular = specularStrength * spec * lightColor;
+    
+    // Combine results
+    vec3 result = (ambient + diffuse + specular) * diffuseColor.rgb;
+    FragColor = vec4(result, diffuseColor.a);
 }
 )";
 
@@ -105,7 +154,7 @@ struct Texture {
     unsigned int id;
     std::string type;
     std::string path;
-    std::string name; // Add name for better matching
+    std::string name;
 };
 
 struct BoneInfo {
@@ -120,6 +169,8 @@ struct Vertex {
     glm::vec2 TexCoords;
     glm::ivec4 BoneIDs = glm::ivec4(-1);
     glm::vec4 Weights = glm::vec4(0.0f);
+    glm::vec3 Tangent;
+    glm::vec3 Bitangent;
 };
 
 struct KeyPosition {
@@ -287,7 +338,12 @@ public:
     void Draw(unsigned int shaderProgram) {
         // Bind textures
         unsigned int diffuseNr = 1;
+        unsigned int normalNr = 1;
+        unsigned int specularNr = 1;
+
         bool hasDiffuseTexture = false;
+        bool hasNormalTexture = false;
+        bool hasSpecularTexture = false;
 
         for (unsigned int i = 0; i < textures.size(); i++) {
             glActiveTexture(GL_TEXTURE0 + i);
@@ -297,16 +353,27 @@ public:
             if (name == "texture_diffuse") {
                 number = std::to_string(diffuseNr++);
                 hasDiffuseTexture = true;
-                // Set the main diffuse texture uniform
                 glUniform1i(glGetUniformLocation(shaderProgram, "diffuseTexture"), i);
+            }
+            else if (name == "texture_normal") {
+                number = std::to_string(normalNr++);
+                hasNormalTexture = true;
+                glUniform1i(glGetUniformLocation(shaderProgram, "normalTexture"), i);
+            }
+            else if (name == "texture_specular") {
+                number = std::to_string(specularNr++);
+                hasSpecularTexture = true;
+                glUniform1i(glGetUniformLocation(shaderProgram, "specularTexture"), i);
             }
 
             glUniform1i(glGetUniformLocation(shaderProgram, (name + number).c_str()), i);
             glBindTexture(GL_TEXTURE_2D, textures[i].id);
         }
 
-        // Set useTexture uniform
-        glUniform1i(glGetUniformLocation(shaderProgram, "useTexture"), hasDiffuseTexture);
+        // Set texture usage uniforms
+        glUniform1i(glGetUniformLocation(shaderProgram, "useDiffuseTexture"), hasDiffuseTexture);
+        glUniform1i(glGetUniformLocation(shaderProgram, "useNormalTexture"), hasNormalTexture);
+        glUniform1i(glGetUniformLocation(shaderProgram, "useSpecularTexture"), hasSpecularTexture);
 
         // Draw mesh
         glBindVertexArray(VAO);
@@ -330,16 +397,27 @@ private:
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(unsigned int), &indices[0], GL_STATIC_DRAW);
 
+        // Vertex positions
         glEnableVertexAttribArray(0);
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)0);
+        // Vertex normals
         glEnableVertexAttribArray(1);
         glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, Normal));
+        // Vertex texture coords
         glEnableVertexAttribArray(2);
         glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, TexCoords));
+        // Vertex bone IDs
         glEnableVertexAttribArray(3);
         glVertexAttribIPointer(3, 4, GL_INT, sizeof(Vertex), (void*)offsetof(Vertex, BoneIDs));
+        // Vertex weights
         glEnableVertexAttribArray(4);
         glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, Weights));
+        // Vertex tangent
+        glEnableVertexAttribArray(5);
+        glVertexAttribPointer(5, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, Tangent));
+        // Vertex bitangent
+        glEnableVertexAttribArray(6);
+        glVertexAttribPointer(6, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, Bitangent));
 
         glBindVertexArray(0);
     }
@@ -406,7 +484,7 @@ public:
     glm::vec3 modelCenter = glm::vec3(0.0f);
     std::unique_ptr<Animation> animation;
     std::string directory;
-    std::map<std::string, Texture> embeddedTextures; // Store all embedded textures by filename
+    std::map<std::string, Texture> embeddedTextures;
 
     Model(const std::string& path) {
         loadModel(path);
@@ -478,26 +556,38 @@ private:
 
                     Texture embeddedTexture;
                     embeddedTexture.id = TextureFromEmbedded(texture);
-                    embeddedTexture.type = "texture_diffuse";
+
+                    // Determine texture type based on filename
+                    if (textureName.find("normal") != std::string::npos ||
+                        textureName.find("Normal") != std::string::npos) {
+                        embeddedTexture.type = "texture_normal";
+                    }
+                    else if (textureName.find("specular") != std::string::npos ||
+                        textureName.find("spec") != std::string::npos ||
+                        textureName.find("Specular") != std::string::npos) {
+                        embeddedTexture.type = "texture_specular";
+                    }
+                    else {
+                        embeddedTexture.type = "texture_diffuse";
+                    }
+
                     embeddedTexture.path = textureName;
                     embeddedTexture.name = getTextureName(textureName);
 
                     embeddedTextures[embeddedTexture.name] = embeddedTexture;
                     textures_loaded.push_back(embeddedTexture);
 
-                    std::cout << "Successfully loaded embedded texture: " << textureName << std::endl;
+                    std::cout << "Successfully loaded embedded texture: " << textureName
+                        << " as type: " << embeddedTexture.type << std::endl;
                 }
             }
         }
     }
 
     std::string getTextureName(const std::string& path) {
-        // Extract just the filename without path and extension
         size_t lastSlash = path.find_last_of("/\\");
         size_t lastDot = path.find_last_of(".");
         std::string name = path.substr(lastSlash + 1, lastDot - lastSlash - 1);
-
-        // Convert to lowercase for easier matching
         std::transform(name.begin(), name.end(), name.begin(), ::tolower);
         return name;
     }
@@ -533,6 +623,16 @@ private:
                 vertex.TexCoords = glm::vec2(0.0f, 0.0f);
             }
 
+            // Extract tangents and bitangents for normal mapping
+            if (mesh->HasTangentsAndBitangents()) {
+                vertex.Tangent = glm::vec3(mesh->mTangents[i].x, mesh->mTangents[i].y, mesh->mTangents[i].z);
+                vertex.Bitangent = glm::vec3(mesh->mBitangents[i].x, mesh->mBitangents[i].y, mesh->mBitangents[i].z);
+            }
+            else {
+                vertex.Tangent = glm::vec3(1.0f, 0.0f, 0.0f);
+                vertex.Bitangent = glm::vec3(0.0f, 1.0f, 0.0f);
+            }
+
             vertices.push_back(vertex);
         }
 
@@ -546,9 +646,26 @@ private:
         // Process materials and textures
         if (mesh->mMaterialIndex >= 0) {
             aiMaterial* material = scene->mMaterials[mesh->mMaterialIndex];
+
+            // Load diffuse textures
             std::vector<Texture> diffuseMaps = loadMaterialTextures(material,
                 aiTextureType_DIFFUSE, "texture_diffuse");
             textures.insert(textures.end(), diffuseMaps.begin(), diffuseMaps.end());
+
+            // Load normal maps
+            std::vector<Texture> normalMaps = loadMaterialTextures(material,
+                aiTextureType_NORMALS, "texture_normal");
+            textures.insert(textures.end(), normalMaps.begin(), normalMaps.end());
+
+            // Load height maps (often used as normal maps)
+            std::vector<Texture> heightMaps = loadMaterialTextures(material,
+                aiTextureType_HEIGHT, "texture_normal");
+            textures.insert(textures.end(), heightMaps.begin(), heightMaps.end());
+
+            // Load specular maps
+            std::vector<Texture> specularMaps = loadMaterialTextures(material,
+                aiTextureType_SPECULAR, "texture_specular");
+            textures.insert(textures.end(), specularMaps.begin(), specularMaps.end());
         }
 
         if (mesh->HasBones()) {
@@ -630,12 +747,6 @@ private:
             }
         }
 
-        // If no textures found and we have embedded textures, use the first available one
-        if (textures.empty() && !embeddedTextures.empty()) {
-            std::cout << "No specific texture found, using first available embedded texture" << std::endl;
-            textures.push_back(embeddedTextures.begin()->second);
-        }
-
         return textures;
     }
 
@@ -645,7 +756,6 @@ private:
         glBindTexture(GL_TEXTURE_2D, textureID);
 
         if (embeddedTexture->mHeight == 0) {
-            // Compressed texture data (most common case for embedded FBX)
             int width, height, nrComponents;
             unsigned char* data = stbi_load_from_memory(
                 reinterpret_cast<unsigned char*>(embeddedTexture->pcData),
@@ -683,7 +793,6 @@ private:
     }
 
     unsigned int TextureFromFile(const std::string& filename, const std::string& directory) {
-        // Try multiple possible locations
         std::vector<std::string> possiblePaths = {
             directory + '/' + filename,
             filename,
@@ -736,7 +845,6 @@ private:
     }
 
     void createDefaultTexture(unsigned int textureID) {
-        // Create a colorful default texture
         const int texSize = 64;
         std::vector<unsigned char> defaultData(texSize * texSize * 3);
 
@@ -744,7 +852,6 @@ private:
             for (int x = 0; x < texSize; x++) {
                 int index = (y * texSize + x) * 3;
 
-                // Create a colorful pattern
                 float r = (sin(x * 0.3f) * 0.5f + 0.5f) * 255;
                 float g = (cos(y * 0.3f) * 0.5f + 0.5f) * 255;
                 float b = (sin((x + y) * 0.1f) * 0.5f + 0.5f) * 255;
@@ -899,7 +1006,7 @@ int main() {
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
     // Create window
-    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "Mixamo FBX Animation - Textured Character", NULL, NULL);
+    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "Mixamo FBX Animation - Advanced Lighting", NULL, NULL);
     if (window == NULL) {
         std::cout << "Failed to create GLFW window" << std::endl;
         glfwTerminate();
@@ -991,6 +1098,7 @@ int main() {
         }
 
         // Render
+        //glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
         glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -1016,6 +1124,9 @@ int main() {
             glm::value_ptr(view));
         glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), 1, GL_FALSE,
             glm::value_ptr(model));
+
+        // Set view position for specular lighting
+        glUniform3fv(glGetUniformLocation(shaderProgram, "viewPos"), 1, glm::value_ptr(cameraPos));
 
         // Set bone matrices
         const auto& boneMatrices = animator.GetFinalBoneMatrices();
