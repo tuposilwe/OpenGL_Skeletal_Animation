@@ -16,7 +16,7 @@
 #include <memory>
 #include <algorithm>
 
-// Shader sources
+// Shader sources (same as before)
 const char* vertexShaderSource = R"(
 #version 330 core
 layout (location = 0) in vec3 aPos;
@@ -429,13 +429,15 @@ public:
     float m_TicksPerSecond;
     std::vector<Bone> m_Bones;
     std::map<std::string, BoneInfo> m_BoneInfoMap;
+    std::string m_Name;
 
-    Animation(const aiScene* scene, const std::string& animationName) {
-        aiAnimation* animation = scene->mAnimations[0];
+    Animation(const aiScene* scene, int animationIndex, const std::string& animationName)
+        : m_Name(animationName) {
+        aiAnimation* animation = scene->mAnimations[animationIndex];
         m_Duration = animation->mDuration;
         m_TicksPerSecond = animation->mTicksPerSecond != 0 ? animation->mTicksPerSecond : 25.0f;
 
-        std::cout << "Loading animation: " << animationName << std::endl;
+        std::cout << "Loading animation " << animationIndex << ": " << animationName << std::endl;
         std::cout << "Duration: " << m_Duration << " ticks" << std::endl;
         std::cout << "Ticks per second: " << m_TicksPerSecond << std::endl;
         std::cout << "Number of channels: " << animation->mNumChannels << std::endl;
@@ -450,6 +452,8 @@ public:
         }
         return nullptr;
     }
+
+    const std::string& GetName() const { return m_Name; }
 
 private:
     void ReadMissingBones(const aiAnimation* animation) {
@@ -482,7 +486,7 @@ public:
     int boneCounter = 0;
     glm::vec3 modelSize = glm::vec3(1.0f);
     glm::vec3 modelCenter = glm::vec3(0.0f);
-    std::unique_ptr<Animation> animation;
+    std::vector<std::unique_ptr<Animation>> animations;
     std::string directory;
     std::map<std::string, Texture> embeddedTextures;
 
@@ -507,9 +511,22 @@ public:
         return modelCenter;
     }
 
-    bool HasAnimation() const {
-        return animation != nullptr;
+    bool HasAnimations() const {
+        return !animations.empty();
     }
+
+    int GetAnimationCount() const {
+        return animations.size();
+    }
+
+    const std::string& GetAnimationName(int index) const {
+        if (index >= 0 && index < animations.size()) {
+            return animations[index]->GetName();
+        }
+        static std::string empty = "";
+        return empty;
+    }
+
     const aiScene* m_Scene;
 
 private:
@@ -534,9 +551,32 @@ private:
         // Load all embedded textures first
         loadEmbeddedTextures();
 
+        // Load all animations
+       // In Model::loadModel() - enhance animation loading
         if (m_Scene->HasAnimations()) {
             std::cout << "Model has " << m_Scene->mNumAnimations << " animations" << std::endl;
-            animation = std::make_unique<Animation>(m_Scene, "MixamoRun");
+
+            for (unsigned int i = 0; i < m_Scene->mNumAnimations; i++) {
+                aiAnimation* aiAnim = m_Scene->mAnimations[i];
+                std::string animName = aiAnim->mName.C_Str();
+
+                // Handle NLA strip names - they often have prefixes
+                if (animName.empty()) {
+                    animName = "Animation_" + std::to_string(i);
+                }
+                else {
+                    // Clean up NLA strip names (remove track prefixes if needed)
+                    size_t lastDot = animName.find_last_of('.');
+                    if (lastDot != std::string::npos) {
+                        animName = animName.substr(lastDot + 1);
+                    }
+                }
+
+                std::cout << "Loading animation " << i << ": " << animName
+                    << " (Duration: " << aiAnim->mDuration << " ticks)" << std::endl;
+
+                animations.push_back(std::make_unique<Animation>(m_Scene, i, animName));
+            }
         }
         else {
             std::cout << "Model has no animations" << std::endl;
@@ -910,29 +950,60 @@ private:
     std::vector<glm::mat4> m_FinalBoneMatrices;
     float m_CurrentTime;
     float m_DeltaTime;
+    int m_CurrentAnimationIndex;
 
 public:
     Animator() {
         m_FinalBoneMatrices.resize(100, glm::mat4(1.0f));
         m_CurrentTime = 0.0f;
         m_DeltaTime = 0.0f;
+        m_CurrentAnimationIndex = 0;
     }
 
     void UpdateAnimation(float dt, Model& model) {
-        if (!model.HasAnimation()) return;
+        if (!model.HasAnimations()) return;
+        if (m_CurrentAnimationIndex >= model.animations.size()) return;
 
+        Animation* currentAnimation = model.animations[m_CurrentAnimationIndex].get();
         m_DeltaTime = dt;
-        m_CurrentTime += model.animation->m_TicksPerSecond * m_DeltaTime;
-        m_CurrentTime = fmod(m_CurrentTime, model.animation->m_Duration);
+        m_CurrentTime += currentAnimation->m_TicksPerSecond * m_DeltaTime;
+        m_CurrentTime = fmod(m_CurrentTime, currentAnimation->m_Duration);
 
-        CalculateBoneTransform(model, model.m_Scene->mRootNode, glm::mat4(1.0f));
+        CalculateBoneTransform(model, model.m_Scene->mRootNode, glm::mat4(1.0f), *currentAnimation);
     }
 
-    void CalculateBoneTransform(Model& model, const aiNode* node, const glm::mat4& parentTransform) {
+    void SetAnimation(int index, Model& model) {
+        if (index >= 0 && index < model.GetAnimationCount()) {
+            m_CurrentAnimationIndex = index;
+            m_CurrentTime = 0.0f; // Reset time when switching animations
+            std::cout << "Switched to animation: " << model.GetAnimationName(index) << std::endl;
+        }
+    }
+
+    void NextAnimation(Model& model) {
+        int nextIndex = (m_CurrentAnimationIndex + 1) % model.GetAnimationCount();
+        SetAnimation(nextIndex, model);
+    }
+
+    void PreviousAnimation(Model& model) {
+        int prevIndex = (m_CurrentAnimationIndex - 1 + model.GetAnimationCount()) % model.GetAnimationCount();
+        SetAnimation(prevIndex, model);
+    }
+
+    int GetCurrentAnimationIndex() const {
+        return m_CurrentAnimationIndex;
+    }
+
+    const std::vector<glm::mat4>& GetFinalBoneMatrices() const {
+        return m_FinalBoneMatrices;
+    }
+
+private:
+    void CalculateBoneTransform(Model& model, const aiNode* node, const glm::mat4& parentTransform, Animation& animation) {
         std::string nodeName = node->mName.C_Str();
         glm::mat4 nodeTransform = aiMatrixToGlm(node->mTransformation);
 
-        Bone* bone = model.animation->FindBone(nodeName);
+        Bone* bone = animation.FindBone(nodeName);
 
         if (bone) {
             bone->Update(m_CurrentTime);
@@ -947,15 +1018,10 @@ public:
         }
 
         for (unsigned int i = 0; i < node->mNumChildren; i++) {
-            CalculateBoneTransform(model, node->mChildren[i], globalTransformation);
+            CalculateBoneTransform(model, node->mChildren[i], globalTransformation, animation);
         }
     }
 
-    const std::vector<glm::mat4>& GetFinalBoneMatrices() const {
-        return m_FinalBoneMatrices;
-    }
-
-private:
     glm::mat4 aiMatrixToGlm(const aiMatrix4x4& from) {
         glm::mat4 to;
         to[0][0] = from.a1; to[0][1] = from.b1; to[0][2] = from.c1; to[0][3] = from.d1;
@@ -1006,7 +1072,7 @@ int main() {
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
     // Create window
-    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "Mixamo FBX Animation - Advanced Lighting", NULL, NULL);
+    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "Mixamo FBX Animation - Multiple Animations", NULL, NULL);
     if (window == NULL) {
         std::cout << "Failed to create GLFW window" << std::endl;
         glfwTerminate();
@@ -1066,12 +1132,19 @@ int main() {
     // Load your Mixamo character model
     std::cout << "Loading Mixamo Character Model..." << std::endl;
 
-    std::string modelPath = "models/boy_my.fbx";
+    std::string modelPath = "models/super_boy.fbx";
 
     Model character(modelPath);
 
     std::cout << "Model loaded with " << character.meshes.size() << " meshes and "
         << character.boneInfoMap.size() << " bones" << std::endl;
+
+    // Print available animations
+    std::cout << "\n=== AVAILABLE ANIMATIONS ===" << std::endl;
+    for (int i = 0; i < character.GetAnimationCount(); i++) {
+        std::cout << i << ": " << character.GetAnimationName(i) << std::endl;
+    }
+    std::cout << "============================\n" << std::endl;
 
     Animator animator;
 
@@ -1081,6 +1154,17 @@ int main() {
     // Calculate automatic scaling
     float autoScale = character.getScaleFactor();
     std::cout << "Using auto-scale factor: " << autoScale << std::endl;
+
+    // Print controls
+    std::cout << "\n=== CONTROLS ===" << std::endl;
+    std::cout << "WASD: Move character" << std::endl;
+    std::cout << "Arrow Keys: Move camera" << std::endl;
+    std::cout << "Mouse: Look around" << std::endl;
+    std::cout << "1-5: Switch to animation 1-5" << std::endl;
+    std::cout << "N: Next animation" << std::endl;
+    std::cout << "P: Previous animation" << std::endl;
+    std::cout << "ESC: Exit" << std::endl;
+    std::cout << "================\n" << std::endl;
 
     // Render loop
     while (!glfwWindowShouldClose(window)) {
@@ -1092,14 +1176,24 @@ int main() {
         // Input
         processInput(window);
 
+        // Animation switching with number keys
+        if (glfwGetKey(window, GLFW_KEY_1) == GLFW_PRESS) animator.SetAnimation(0, character);
+        if (glfwGetKey(window, GLFW_KEY_2) == GLFW_PRESS) animator.SetAnimation(1, character);
+        if (glfwGetKey(window, GLFW_KEY_3) == GLFW_PRESS) animator.SetAnimation(2, character);
+        if (glfwGetKey(window, GLFW_KEY_4) == GLFW_PRESS) animator.SetAnimation(3, character);
+        if (glfwGetKey(window, GLFW_KEY_5) == GLFW_PRESS) animator.SetAnimation(4, character);
+        if (glfwGetKey(window, GLFW_KEY_N) == GLFW_PRESS) animator.NextAnimation(character);
+        if (glfwGetKey(window, GLFW_KEY_P) == GLFW_PRESS) animator.PreviousAnimation(character);
+
         // Update animation
-        if (character.HasAnimation()) {
+        if (character.HasAnimations()) {
             animator.UpdateAnimation(deltaTime, character);
         }
 
         // Render
-        //glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+       // glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
         glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
+
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         glUseProgram(shaderProgram);
