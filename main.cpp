@@ -1230,7 +1230,7 @@ int main() {
     Animator animator;
 
     // Set default animation (usually the first one or idle animation)
-    int defaultAnimIndex = 0;
+    int defaultAnimIndex = 5;
     animator.SetAnimation(defaultAnimIndex, character);
 
     // Configure global OpenGL state
@@ -1443,16 +1443,20 @@ void processInput(GLFWwindow* window) {
 
     // Character movement
     float cameraSpeed = movementSpeed * deltaTime;
-    float rotationSpeedRad = glm::radians(rotationSpeed) * deltaTime;
+    float rotationSpeedValue = rotationSpeed * deltaTime; 
 
     if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
         characterPosition += cameraSpeed * glm::vec3(sin(glm::radians(characterRotation)), 0.0f, cos(glm::radians(characterRotation)));
     if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
         characterPosition -= cameraSpeed * glm::vec3(sin(glm::radians(characterRotation)), 0.0f, cos(glm::radians(characterRotation)));
     if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
-        characterRotation += rotationSpeed;
+        characterRotation += rotationSpeedValue;
     if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
-        characterRotation -= rotationSpeed;
+        characterRotation -= rotationSpeedValue;
+
+    // After modifying characterRotation
+    characterRotation = fmod(characterRotation, 360.0f);
+    if (characterRotation < 0.0f) characterRotation += 360.0f;
 
     // Camera movement (free look)
     float cameraMoveSpeed = 5.0f * deltaTime;
