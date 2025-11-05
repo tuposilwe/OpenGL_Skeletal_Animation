@@ -1213,7 +1213,7 @@ int main() {
     // Load your Mixamo character model
     std::cout << "Loading Mixamo Character Model..." << std::endl;
 
-    std::string modelPath = "models/super_boy.fbx";
+    std::string modelPath = "models/fun_boy.fbx";
 
     Model character(modelPath);
 
