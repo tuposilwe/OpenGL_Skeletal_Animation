@@ -16,7 +16,7 @@
 #include <memory>
 #include <algorithm>
 
-// Shader sources (same as before)
+// Shader sources
 const char* vertexShaderSource = R"(
 #version 330 core
 layout (location = 0) in vec3 aPos;
@@ -552,7 +552,6 @@ private:
         loadEmbeddedTextures();
 
         // Load all animations
-       // In Model::loadModel() - enhance animation loading
         if (m_Scene->HasAnimations()) {
             std::cout << "Model has " << m_Scene->mNumAnimations << " animations" << std::endl;
 
@@ -951,6 +950,11 @@ private:
     float m_CurrentTime;
     float m_DeltaTime;
     int m_CurrentAnimationIndex;
+    int m_DefaultAnimationIndex;
+    int m_RequestedAnimationIndex;
+    bool m_IsPlayingTemporaryAnimation;
+    float m_TemporaryAnimationDuration;
+    float m_TemporaryAnimationTimer;
 
 public:
     Animator() {
@@ -958,40 +962,117 @@ public:
         m_CurrentTime = 0.0f;
         m_DeltaTime = 0.0f;
         m_CurrentAnimationIndex = 0;
+        m_DefaultAnimationIndex = 0;
+        m_RequestedAnimationIndex = 0;
+        m_IsPlayingTemporaryAnimation = false;
+        m_TemporaryAnimationDuration = 0.0f;
+        m_TemporaryAnimationTimer = 0.0f;
     }
 
     void UpdateAnimation(float dt, Model& model) {
         if (!model.HasAnimations()) return;
-        if (m_CurrentAnimationIndex >= model.animations.size()) return;
 
-        Animation* currentAnimation = model.animations[m_CurrentAnimationIndex].get();
         m_DeltaTime = dt;
+
+        // Handle temporary animation timing
+        if (m_IsPlayingTemporaryAnimation) {
+            m_TemporaryAnimationTimer -= dt;
+
+            // If temporary animation finished, return to default
+            if (m_TemporaryAnimationTimer <= 0.0f) {
+                m_IsPlayingTemporaryAnimation = false;
+                m_CurrentAnimationIndex = m_DefaultAnimationIndex;
+                m_CurrentTime = 0.0f; // Reset time for default animation
+                std::cout << "Returned to default animation: " << model.GetAnimationName(m_DefaultAnimationIndex) << std::endl;
+            }
+        }
+
+        // Get the current animation (either temporary or default)
+        Animation* currentAnimation = model.animations[m_CurrentAnimationIndex].get();
         m_CurrentTime += currentAnimation->m_TicksPerSecond * m_DeltaTime;
         m_CurrentTime = fmod(m_CurrentTime, currentAnimation->m_Duration);
 
         CalculateBoneTransform(model, model.m_Scene->mRootNode, glm::mat4(1.0f), *currentAnimation);
     }
 
-    void SetAnimation(int index, Model& model) {
-        if (index >= 0 && index < model.GetAnimationCount()) {
+    // Play an animation temporarily, then return to default
+    void PlayTemporaryAnimation(int index, Model& model, float duration = 0.0f) {
+        if (index >= 0 && index < model.GetAnimationCount() && index != m_CurrentAnimationIndex) {
+            m_RequestedAnimationIndex = index;
+            m_IsPlayingTemporaryAnimation = true;
+
+            // If duration is 0, play one full cycle
+            if (duration <= 0.0f) {
+                Animation* anim = model.animations[index].get();
+                duration = anim->m_Duration / anim->m_TicksPerSecond;
+            }
+
+            m_TemporaryAnimationDuration = duration;
+            m_TemporaryAnimationTimer = duration;
             m_CurrentAnimationIndex = index;
-            m_CurrentTime = 0.0f; // Reset time when switching animations
-            std::cout << "Switched to animation: " << model.GetAnimationName(index) << std::endl;
+            m_CurrentTime = 0.0f;
+
+            std::cout << "Playing temporary animation: " << model.GetAnimationName(index)
+                << " for " << duration << " seconds" << std::endl;
         }
     }
 
-    void NextAnimation(Model& model) {
-        int nextIndex = (m_CurrentAnimationIndex + 1) % model.GetAnimationCount();
-        SetAnimation(nextIndex, model);
+    // Set permanent animation (becomes the new default)
+    void SetAnimation(int index, Model& model) {
+        if (index >= 0 && index < model.GetAnimationCount()) {
+            m_CurrentAnimationIndex = index;
+            m_DefaultAnimationIndex = index;
+            m_IsPlayingTemporaryAnimation = false;
+            m_CurrentTime = 0.0f;
+            std::cout << "Set new default animation: " << model.GetAnimationName(index) << std::endl;
+        }
     }
 
+    // Set default animation without interrupting current temporary animation
+    void SetDefaultAnimation(int index, Model& model) {
+        if (index >= 0 && index < model.GetAnimationCount()) {
+            m_DefaultAnimationIndex = index;
+            std::cout << "Default animation set to: " << model.GetAnimationName(index)
+                << " (will activate after current animation)" << std::endl;
+        }
+    }
+
+    // Next animation (temporary)
+    void NextAnimation(Model& model) {
+        int nextIndex = (m_CurrentAnimationIndex + 1) % model.GetAnimationCount();
+        PlayTemporaryAnimation(nextIndex, model);
+    }
+
+    // Previous animation (temporary)
     void PreviousAnimation(Model& model) {
         int prevIndex = (m_CurrentAnimationIndex - 1 + model.GetAnimationCount()) % model.GetAnimationCount();
-        SetAnimation(prevIndex, model);
+        PlayTemporaryAnimation(prevIndex, model);
+    }
+
+    // Force return to default animation immediately
+    void ReturnToDefault(Model& model) {
+        if (m_CurrentAnimationIndex != m_DefaultAnimationIndex) {
+            m_IsPlayingTemporaryAnimation = false;
+            m_CurrentAnimationIndex = m_DefaultAnimationIndex;
+            m_CurrentTime = 0.0f;
+            std::cout << "Returned to default animation: " << model.GetAnimationName(m_DefaultAnimationIndex) << std::endl;
+        }
     }
 
     int GetCurrentAnimationIndex() const {
         return m_CurrentAnimationIndex;
+    }
+
+    int GetDefaultAnimationIndex() const {
+        return m_DefaultAnimationIndex;
+    }
+
+    bool IsPlayingTemporaryAnimation() const {
+        return m_IsPlayingTemporaryAnimation;
+    }
+
+    float GetRemainingTemporaryAnimationTime() const {
+        return m_TemporaryAnimationTimer;
     }
 
     const std::vector<glm::mat4>& GetFinalBoneMatrices() const {
@@ -1072,7 +1153,7 @@ int main() {
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
     // Create window
-    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "Mixamo FBX Animation - Multiple Animations", NULL, NULL);
+    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "Mixamo FBX Animation - Default Animation System", NULL, NULL);
     if (window == NULL) {
         std::cout << "Failed to create GLFW window" << std::endl;
         glfwTerminate();
@@ -1148,6 +1229,10 @@ int main() {
 
     Animator animator;
 
+    // Set default animation (usually the first one or idle animation)
+    int defaultAnimIndex = 0;
+    animator.SetAnimation(defaultAnimIndex, character);
+
     // Configure global OpenGL state
     glEnable(GL_DEPTH_TEST);
 
@@ -1155,16 +1240,23 @@ int main() {
     float autoScale = character.getScaleFactor();
     std::cout << "Using auto-scale factor: " << autoScale << std::endl;
 
-    // Print controls
-    std::cout << "\n=== CONTROLS ===" << std::endl;
+    // Print enhanced controls
+    std::cout << "\n=== ENHANCED ANIMATION CONTROLS ===" << std::endl;
     std::cout << "WASD: Move character" << std::endl;
     std::cout << "Arrow Keys: Move camera" << std::endl;
     std::cout << "Mouse: Look around" << std::endl;
-    std::cout << "1-5: Switch to animation 1-5" << std::endl;
-    std::cout << "N: Next animation" << std::endl;
-    std::cout << "P: Previous animation" << std::endl;
+    std::cout << "1-9: Play animation temporarily (returns to default)" << std::endl;
+    std::cout << "0: Set new default animation (current animation)" << std::endl;
+    std::cout << "N: Next temporary animation" << std::endl;
+    std::cout << "P: Previous temporary animation" << std::endl;
+    std::cout << "R: Return to default animation immediately" << std::endl;
     std::cout << "ESC: Exit" << std::endl;
-    std::cout << "================\n" << std::endl;
+    std::cout << "==================================\n" << std::endl;
+
+    // Variables for animation info display
+    float infoDisplayTimer = 0.0f;
+    const float INFO_DISPLAY_TIME = 3.0f;
+    std::string currentAnimationInfo = "";
 
     // Render loop
     while (!glfwWindowShouldClose(window)) {
@@ -1176,24 +1268,108 @@ int main() {
         // Input
         processInput(window);
 
-        // Animation switching with number keys
-        if (glfwGetKey(window, GLFW_KEY_1) == GLFW_PRESS) animator.SetAnimation(0, character);
-        if (glfwGetKey(window, GLFW_KEY_2) == GLFW_PRESS) animator.SetAnimation(1, character);
-        if (glfwGetKey(window, GLFW_KEY_3) == GLFW_PRESS) animator.SetAnimation(2, character);
-        if (glfwGetKey(window, GLFW_KEY_4) == GLFW_PRESS) animator.SetAnimation(3, character);
-        if (glfwGetKey(window, GLFW_KEY_5) == GLFW_PRESS) animator.SetAnimation(4, character);
-        if (glfwGetKey(window, GLFW_KEY_N) == GLFW_PRESS) animator.NextAnimation(character);
-        if (glfwGetKey(window, GLFW_KEY_P) == GLFW_PRESS) animator.PreviousAnimation(character);
+        // Animation controls - TEMPORARY animations (return to default)
+        if (glfwGetKey(window, GLFW_KEY_1) == GLFW_PRESS) {
+            animator.PlayTemporaryAnimation(0, character);
+            currentAnimationInfo = "Playing: " + character.GetAnimationName(0);
+            infoDisplayTimer = INFO_DISPLAY_TIME;
+        }
+        if (glfwGetKey(window, GLFW_KEY_2) == GLFW_PRESS) {
+            animator.PlayTemporaryAnimation(1, character);
+            currentAnimationInfo = "Playing: " + character.GetAnimationName(1);
+            infoDisplayTimer = INFO_DISPLAY_TIME;
+        }
+        if (glfwGetKey(window, GLFW_KEY_3) == GLFW_PRESS) {
+            animator.PlayTemporaryAnimation(2, character);
+            currentAnimationInfo = "Playing: " + character.GetAnimationName(2);
+            infoDisplayTimer = INFO_DISPLAY_TIME;
+        }
+        if (glfwGetKey(window, GLFW_KEY_4) == GLFW_PRESS) {
+            animator.PlayTemporaryAnimation(3, character);
+            currentAnimationInfo = "Playing: " + character.GetAnimationName(3);
+            infoDisplayTimer = INFO_DISPLAY_TIME;
+        }
+        if (glfwGetKey(window, GLFW_KEY_5) == GLFW_PRESS) {
+            animator.PlayTemporaryAnimation(4, character);
+            currentAnimationInfo = "Playing: " + character.GetAnimationName(4);
+            infoDisplayTimer = INFO_DISPLAY_TIME;
+        }
+        if (glfwGetKey(window, GLFW_KEY_6) == GLFW_PRESS) {
+            animator.PlayTemporaryAnimation(5, character);
+            currentAnimationInfo = "Playing: " + character.GetAnimationName(5);
+            infoDisplayTimer = INFO_DISPLAY_TIME;
+        }
+        if (glfwGetKey(window, GLFW_KEY_7) == GLFW_PRESS) {
+            animator.PlayTemporaryAnimation(6, character);
+            currentAnimationInfo = "Playing: " + character.GetAnimationName(6);
+            infoDisplayTimer = INFO_DISPLAY_TIME;
+        }
+        if (glfwGetKey(window, GLFW_KEY_8) == GLFW_PRESS) {
+            animator.PlayTemporaryAnimation(7, character);
+            currentAnimationInfo = "Playing: " + character.GetAnimationName(7);
+            infoDisplayTimer = INFO_DISPLAY_TIME;
+        }
+        if (glfwGetKey(window, GLFW_KEY_9) == GLFW_PRESS) {
+            animator.PlayTemporaryAnimation(8, character);
+            currentAnimationInfo = "Playing: " + character.GetAnimationName(8);
+            infoDisplayTimer = INFO_DISPLAY_TIME;
+        }
+
+        // Set NEW DEFAULT animation (key 0)
+        if (glfwGetKey(window, GLFW_KEY_0) == GLFW_PRESS) {
+            animator.SetAnimation(animator.GetCurrentAnimationIndex(), character);
+            currentAnimationInfo = "New Default: " + character.GetAnimationName(animator.GetCurrentAnimationIndex());
+            infoDisplayTimer = INFO_DISPLAY_TIME;
+        }
+
+        // Temporary animation navigation
+        static bool nKeyPressed = false;
+        static bool pKeyPressed = false;
+        static bool rKeyPressed = false;
+
+        if (glfwGetKey(window, GLFW_KEY_N) == GLFW_PRESS && !nKeyPressed) {
+            animator.NextAnimation(character);
+            currentAnimationInfo = "Playing: " + character.GetAnimationName(animator.GetCurrentAnimationIndex());
+            infoDisplayTimer = INFO_DISPLAY_TIME;
+            nKeyPressed = true;
+        }
+        if (glfwGetKey(window, GLFW_KEY_N) == GLFW_RELEASE) {
+            nKeyPressed = false;
+        }
+
+        if (glfwGetKey(window, GLFW_KEY_P) == GLFW_PRESS && !pKeyPressed) {
+            animator.PreviousAnimation(character);
+            currentAnimationInfo = "Playing: " + character.GetAnimationName(animator.GetCurrentAnimationIndex());
+            infoDisplayTimer = INFO_DISPLAY_TIME;
+            pKeyPressed = true;
+        }
+        if (glfwGetKey(window, GLFW_KEY_P) == GLFW_RELEASE) {
+            pKeyPressed = false;
+        }
+
+        // Force return to default
+        if (glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS && !rKeyPressed) {
+            animator.ReturnToDefault(character);
+            currentAnimationInfo = "Returned to: " + character.GetAnimationName(animator.GetDefaultAnimationIndex());
+            infoDisplayTimer = INFO_DISPLAY_TIME;
+            rKeyPressed = true;
+        }
+        if (glfwGetKey(window, GLFW_KEY_R) == GLFW_RELEASE) {
+            rKeyPressed = false;
+        }
 
         // Update animation
         if (character.HasAnimations()) {
             animator.UpdateAnimation(deltaTime, character);
         }
 
-        // Render
-       // glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
-        glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
+        // Update info display timer
+        if (infoDisplayTimer > 0.0f) {
+            infoDisplayTimer -= deltaTime;
+        }
 
+        // Render
+        glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         glUseProgram(shaderProgram);
@@ -1232,6 +1408,25 @@ int main() {
 
         // Draw character
         character.Draw(shaderProgram);
+
+        // Display current animation info in console
+        static int lastAnimIndex = -1;
+        static bool lastWasTemporary = false;
+        if (animator.GetCurrentAnimationIndex() != lastAnimIndex ||
+            animator.IsPlayingTemporaryAnimation() != lastWasTemporary) {
+
+            lastAnimIndex = animator.GetCurrentAnimationIndex();
+            lastWasTemporary = animator.IsPlayingTemporaryAnimation();
+
+            std::cout << "Current Animation: " << character.GetAnimationName(lastAnimIndex);
+            if (animator.IsPlayingTemporaryAnimation()) {
+                std::cout << " (Temporary - " << animator.GetRemainingTemporaryAnimationTime() << "s remaining)";
+            }
+            else {
+                std::cout << " (Default)";
+            }
+            std::cout << std::endl;
+        }
 
         // Swap buffers and poll events
         glfwSwapBuffers(window);
