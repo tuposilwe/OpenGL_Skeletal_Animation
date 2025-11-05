@@ -1142,8 +1142,11 @@ float pitch = 0.0f;
 // Character control
 glm::vec3 characterPosition = glm::vec3(0.0f, 0.0f, 0.0f);
 float characterRotation = 0.0f;
+float targetRotation = 0.0f;
 float movementSpeed = 3.0f;
 float rotationSpeed = 60.0f;
+float rotationLerpSpeed = 12.0f; // Higher = faster response, Lower = more smoothing
+
 
 int main() {
     // Initialize GLFW
@@ -1153,7 +1156,7 @@ int main() {
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
     // Create window
-    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "Mixamo FBX Animation - Default Animation System", NULL, NULL);
+    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "Mixamo FBX Animation - Smooth Rotation System", NULL, NULL);
     if (window == NULL) {
         std::cout << "Failed to create GLFW window" << std::endl;
         glfwTerminate();
@@ -1242,7 +1245,7 @@ int main() {
 
     // Print enhanced controls
     std::cout << "\n=== ENHANCED ANIMATION CONTROLS ===" << std::endl;
-    std::cout << "WASD: Move character" << std::endl;
+    std::cout << "WASD: Move character (with smooth rotation)" << std::endl;
     std::cout << "Arrow Keys: Move camera" << std::endl;
     std::cout << "Mouse: Look around" << std::endl;
     std::cout << "1-9: Play animation temporarily (returns to default)" << std::endl;
@@ -1363,6 +1366,19 @@ int main() {
             animator.UpdateAnimation(deltaTime, character);
         }
 
+        // Update smooth rotation interpolation
+        float t = 1.0f - glm::exp(-rotationLerpSpeed * deltaTime);
+        characterRotation = glm::mix(characterRotation, targetRotation, t);
+
+        // Prevent micro-jitter when very close to target
+        if (glm::abs(characterRotation - targetRotation) < 0.1f) {
+            characterRotation = targetRotation;
+        }
+
+        // Keep within 0-360 range
+        characterRotation = fmod(characterRotation, 360.0f);
+        if (characterRotation < 0.0f) characterRotation += 360.0f;
+
         // Update info display timer
         if (infoDisplayTimer > 0.0f) {
             infoDisplayTimer -= deltaTime;
@@ -1443,20 +1459,19 @@ void processInput(GLFWwindow* window) {
 
     // Character movement
     float cameraSpeed = movementSpeed * deltaTime;
-    float rotationSpeedValue = rotationSpeed * deltaTime; 
+    float rotationSpeedValue = rotationSpeed * deltaTime;
 
     if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
         characterPosition += cameraSpeed * glm::vec3(sin(glm::radians(characterRotation)), 0.0f, cos(glm::radians(characterRotation)));
     if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
         characterPosition -= cameraSpeed * glm::vec3(sin(glm::radians(characterRotation)), 0.0f, cos(glm::radians(characterRotation)));
     if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
-        characterRotation += rotationSpeedValue;
+        targetRotation += rotationSpeedValue;
     if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
-        characterRotation -= rotationSpeedValue;
+        targetRotation -= rotationSpeedValue;
 
-    // After modifying characterRotation
-    characterRotation = fmod(characterRotation, 360.0f);
-    if (characterRotation < 0.0f) characterRotation += 360.0f;
+    targetRotation = fmod(targetRotation, 360.0f);
+    if (targetRotation < 0.0f) targetRotation += 360.0f;
 
     // Camera movement (free look)
     float cameraMoveSpeed = 5.0f * deltaTime;
