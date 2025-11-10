@@ -1321,7 +1321,13 @@ float rotationLerpSpeed = 12.0f; // Higher = faster response, Lower = more smoot
 
 // Animation states
 bool isMoving = false;
+bool isMovingBackward = false;
+bool isTurningLeft = false;
+bool isTurningRight = false;
 bool wasMoving = false;
+bool wasMovingBackward = false;
+bool wasTurningLeft = false;
+bool wasTurningRight = false;
 
 int main() {
     // Initialize GLFW
@@ -1331,7 +1337,7 @@ int main() {
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
     // Create window
-    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "Mixamo FBX Animation - Ground Movement System", NULL, NULL);
+    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "Mixamo FBX Animation - Enhanced Movement System", NULL, NULL);
     if (window == NULL) {
         std::cout << "Failed to create GLFW window" << std::endl;
         glfwTerminate();
@@ -1426,7 +1432,7 @@ int main() {
     // Load your Mixamo character model
     std::cout << "Loading Mixamo Character Model..." << std::endl;
 
-    std::string modelPath = "models/fun_boy2.fbx";
+    std::string modelPath = "models/fun_boy3.fbx";
 
     Model character(modelPath);
 
@@ -1445,9 +1451,13 @@ int main() {
 
     Animator animator;
 
-    // Set default animation to idle
+    // Set animation indices
     int idleAnimIndex = 8; // idle animation
-    int walkAnimIndex = 3; // walk animation
+    int walkAnimIndex = 1; // walk animation
+    int walkBackwardsAnimIndex = 2; // walk backwards animation
+    int leftTurnAnimIndex = 3;      // left turn animation  
+    int rightTurnAnimIndex = 4;     // right turn animation
+
     animator.SetAnimation(idleAnimIndex, character);
 
     // Configure global OpenGL state
@@ -1458,10 +1468,12 @@ int main() {
     std::cout << "Using auto-scale factor: " << autoScale << std::endl;
 
     // Print enhanced controls
-    std::cout << "\n=== ENHANCED ANIMATION CONTROLS ===" << std::endl;
+    std::cout << "\n=== ENHANCED MOVEMENT CONTROLS ===" << std::endl;
     std::cout << "W: Move forward with walk animation" << std::endl;
-    std::cout << "Release W: Stop moving with idle animation" << std::endl;
-    std::cout << "A/D: Rotate character" << std::endl;
+    std::cout << "S: Move backward with walk backwards animation" << std::endl;
+    std::cout << "A: Turn left with left turn animation" << std::endl;
+    std::cout << "D: Turn right with right turn animation" << std::endl;
+    std::cout << "Release keys: Return to idle animation" << std::endl;
     std::cout << "Arrow Keys: Move camera" << std::endl;
     std::cout << "Mouse: Look around" << std::endl;
     std::cout << "1-9: Play animation temporarily (returns to default)" << std::endl;
@@ -1489,20 +1501,43 @@ int main() {
 
         // Handle movement-based animation transitions
         wasMoving = isMoving;
+        wasMovingBackward = isMovingBackward;
+        wasTurningLeft = isTurningLeft;
+        wasTurningRight = isTurningRight;
 
-        // Check if W key is pressed for movement
+        // Check movement keys
         isMoving = (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS);
+        isMovingBackward = (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS);
+        isTurningLeft = (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS);
+        isTurningRight = (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS);
 
-        // Animation transition logic
-        if (isMoving && !wasMoving) {
-            // Started moving - switch to walk animation
-            animator.SetAnimation(walkAnimIndex, character);
-            std::cout << "Started moving - Walk animation" << std::endl;
+        // Enhanced animation transition logic
+        // Priority: Turning > Backward > Forward > Idle
+        if (isTurningLeft && !wasTurningLeft) {
+            // Started turning left
+            animator.PlayTemporaryAnimation(leftTurnAnimIndex, character);
+            std::cout << "Left turn animation" << std::endl;
         }
-        else if (!isMoving && wasMoving) {
-            // Stopped moving - switch to idle animation
+        else if (isTurningRight && !wasTurningRight) {
+            // Started turning right
+            animator.PlayTemporaryAnimation(rightTurnAnimIndex, character);
+            std::cout << "Right turn animation" << std::endl;
+        }
+        else if (isMovingBackward && !wasMovingBackward) {
+            // Started moving backward
+            animator.SetAnimation(walkBackwardsAnimIndex, character);
+            std::cout << "Backward movement animation" << std::endl;
+        }
+        else if (isMoving && !wasMoving) {
+            // Started moving forward
+            animator.SetAnimation(walkAnimIndex, character);
+            std::cout << "Forward movement animation" << std::endl;
+        }
+        else if (!isTurningLeft && !isTurningRight && !isMovingBackward && !isMoving &&
+            (wasTurningLeft || wasTurningRight || wasMovingBackward || wasMoving)) {
+            // Stopped all movement - return to idle
             animator.SetAnimation(idleAnimIndex, character);
-            std::cout << "Stopped moving - Idle animation" << std::endl;
+            std::cout << "Idle animation" << std::endl;
         }
 
         // Animation controls - TEMPORARY animations (return to default)
@@ -1723,12 +1758,18 @@ void processInput(GLFWwindow* window) {
     // Store movement direction
     glm::vec3 moveDirection = glm::vec3(0.0f);
 
+    // Forward movement (W key)
     if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) {
         moveDirection += glm::vec3(sin(glm::radians(characterRotation)), 0.0f, cos(glm::radians(characterRotation)));
     }
+
+    // Backward movement (S key) - REVERSE direction
     if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) {
         moveDirection -= glm::vec3(sin(glm::radians(characterRotation)), 0.0f, cos(glm::radians(characterRotation)));
     }
+
+    // Turning (A and D keys) - but now we'll use animations instead of direct rotation
+    // We'll keep the rotation for character orientation but use turn animations
     if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) {
         targetRotation += rotationSpeedValue;
     }
@@ -1736,8 +1777,8 @@ void processInput(GLFWwindow* window) {
         targetRotation -= rotationSpeedValue;
     }
 
-    // Only move if W is pressed (forward movement)
-    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) {
+    // Only move if W or S is pressed
+    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) {
         moveDirection = glm::normalize(moveDirection);
         characterPosition += moveDirection * cameraSpeed;
 
