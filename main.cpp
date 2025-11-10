@@ -151,6 +151,70 @@ void main()
 }
 )";
 
+// Simple shader for ground
+const char* groundVertexShaderSource = R"(
+#version 330 core
+layout (location = 0) in vec3 aPos;
+layout (location = 1) in vec3 aNormal;
+layout (location = 2) in vec2 aTexCoords;
+
+out vec2 TexCoords;
+out vec3 Normal;
+out vec3 FragPos;
+
+uniform mat4 projection;
+uniform mat4 view;
+uniform mat4 model;
+
+void main()
+{
+    gl_Position = projection * view * model * vec4(aPos, 1.0);
+    FragPos = vec3(model * vec4(aPos, 1.0));
+    Normal = mat3(transpose(inverse(model))) * aNormal;
+    TexCoords = TexCoords;
+}
+)";
+
+const char* groundFragmentShaderSource = R"(
+#version 330 core
+out vec4 FragColor;
+
+in vec2 TexCoords;
+in vec3 Normal;
+in vec3 FragPos;
+
+uniform sampler2D diffuseTexture;
+uniform vec3 lightPos;
+uniform vec3 lightColor;
+uniform vec3 viewPos;
+
+void main()
+{
+    // Ground texture with grid pattern
+    vec2 uv = TexCoords * 10.0; // Scale texture
+    vec4 texColor = texture(diffuseTexture, uv);
+    
+    // Add grid pattern
+    vec2 grid = abs(fract(uv - 0.5) - 0.5);
+    float line = min(grid.x, grid.y);
+    float gridLine = 1.0 - smoothstep(0.0, 0.1, line);
+    
+    // Mix texture with grid
+    vec3 color = mix(texColor.rgb, vec3(0.3, 0.3, 0.3), gridLine * 0.3);
+    
+    // Simple lighting
+    vec3 norm = normalize(Normal);
+    vec3 lightDir = normalize(lightPos - FragPos);
+    float diff = max(dot(norm, lightDir), 0.0);
+    vec3 diffuse = diff * lightColor;
+    
+    vec3 ambient = 0.4 * lightColor;
+    vec3 result = (ambient + diffuse) * color;
+    
+    FragColor = vec4(result, 1.0);
+}
+)";
+
 struct Texture {
     unsigned int id;
     std::string type;
@@ -421,6 +485,109 @@ private:
         glVertexAttribPointer(6, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, Bitangent));
 
         glBindVertexArray(0);
+    }
+};
+
+class Ground {
+public:
+    unsigned int VAO, VBO, EBO;
+    unsigned int textureID;
+    std::vector<Vertex> vertices;
+    std::vector<unsigned int> indices;
+
+    Ground() {
+        createGround();
+        createGroundTexture();
+    }
+
+    void Draw(unsigned int shaderProgram) {
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, textureID);
+        glUniform1i(glGetUniformLocation(shaderProgram, "diffuseTexture"), 0);
+
+        glBindVertexArray(VAO);
+        glDrawElements(GL_TRIANGLES, indices.size(), GL_UNSIGNED_INT, 0);
+        glBindVertexArray(0);
+    }
+
+private:
+    void createGround() {
+        float size = 50.0f;
+        float y = 0.0f; // Ground level
+
+        vertices = {
+            // Positions          // Normals           // Texture Coords
+            {glm::vec3(-size, y, -size), glm::vec3(0.0f, 1.0f, 0.0f), glm::vec2(0.0f, 0.0f)},
+            {glm::vec3(size, y, -size),  glm::vec3(0.0f, 1.0f, 0.0f), glm::vec2(1.0f, 0.0f)},
+            {glm::vec3(size, y, size),   glm::vec3(0.0f, 1.0f, 0.0f), glm::vec2(1.0f, 1.0f)},
+            {glm::vec3(-size, y, size), glm::vec3(0.0f, 1.0f, 0.0f), glm::vec2(0.0f, 1.0f)}
+        };
+
+        indices = {
+            0, 1, 2,
+            2, 3, 0
+        };
+
+        // Setup buffers
+        glGenVertexArrays(1, &VAO);
+        glGenBuffers(1, &VBO);
+        glGenBuffers(1, &EBO);
+
+        glBindVertexArray(VAO);
+
+        glBindBuffer(GL_ARRAY_BUFFER, VBO);
+        glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(Vertex), &vertices[0], GL_STATIC_DRAW);
+
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(unsigned int), &indices[0], GL_STATIC_DRAW);
+
+        // Vertex positions
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)0);
+        // Vertex normals
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, Normal));
+        // Vertex texture coords
+        glEnableVertexAttribArray(2);
+        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, TexCoords));
+
+        glBindVertexArray(0);
+    }
+
+    void createGroundTexture() {
+        const int texSize = 256;
+        std::vector<unsigned char> data(texSize * texSize * 3);
+
+        for (int y = 0; y < texSize; y++) {
+            for (int x = 0; x < texSize; x++) {
+                int index = (y * texSize + x) * 3;
+
+                // Create a grass-like texture with some variation
+                float r = 0.4f + (sin(x * 0.1f) * 0.1f);
+                float g = 0.6f + (cos(y * 0.1f) * 0.1f);
+                float b = 0.3f + (sin((x + y) * 0.05f) * 0.05f);
+
+                // Add some dark spots for variation
+                float noise = (sin(x * 0.3f) * cos(y * 0.3f)) * 0.1f;
+                r += noise;
+                g += noise;
+                b += noise * 0.5f;
+
+                data[index] = static_cast<unsigned char>(r * 255);
+                data[index + 1] = static_cast<unsigned char>(g * 255);
+                data[index + 2] = static_cast<unsigned char>(b * 255);
+            }
+        }
+
+        glGenTextures(1, &textureID);
+        glBindTexture(GL_TEXTURE_2D, textureID);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, texSize, texSize, 0, GL_RGB, GL_UNSIGNED_BYTE, data.data());
+        glGenerateMipmap(GL_TEXTURE_2D);
+
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     }
 };
 
@@ -1140,14 +1307,21 @@ float lastY = SCR_HEIGHT / 2.0f;
 float yaw = -90.0f;
 float pitch = 0.0f;
 
+// Ground level
+const float GROUND_LEVEL = 0.0f;  // Ground is at y=0
+
 // Character control
-glm::vec3 characterPosition = glm::vec3(0.0f, 0.0f, 0.0f);
+glm::vec3 characterPosition = glm::vec3(0.0f, GROUND_LEVEL, 0.0f); // Start at ground level
+
 float characterRotation = 0.0f;
 float targetRotation = 0.0f;
 float movementSpeed = 3.0f;
 float rotationSpeed = 60.0f;
 float rotationLerpSpeed = 12.0f; // Higher = faster response, Lower = more smoothing
 
+// Animation states
+bool isMoving = false;
+bool wasMoving = false;
 
 int main() {
     // Initialize GLFW
@@ -1157,7 +1331,7 @@ int main() {
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
     // Create window
-    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "Mixamo FBX Animation - Smooth Rotation System", NULL, NULL);
+    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "Mixamo FBX Animation - Ground Movement System", NULL, NULL);
     if (window == NULL) {
         std::cout << "Failed to create GLFW window" << std::endl;
         glfwTerminate();
@@ -1214,10 +1388,45 @@ int main() {
     glDeleteShader(vertexShader);
     glDeleteShader(fragmentShader);
 
+    // Build and compile ground shaders
+    unsigned int groundVertexShader = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(groundVertexShader, 1, &groundVertexShaderSource, NULL);
+    glCompileShader(groundVertexShader);
+
+    glGetShaderiv(groundVertexShader, GL_COMPILE_STATUS, &success);
+    if (!success) {
+        glGetShaderInfoLog(groundVertexShader, 512, NULL, infoLog);
+        std::cout << "ERROR::GROUND_SHADER::VERTEX::COMPILATION_FAILED\n" << infoLog << std::endl;
+    }
+
+    unsigned int groundFragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(groundFragmentShader, 1, &groundFragmentShaderSource, NULL);
+    glCompileShader(groundFragmentShader);
+
+    glGetShaderiv(groundFragmentShader, GL_COMPILE_STATUS, &success);
+    if (!success) {
+        glGetShaderInfoLog(groundFragmentShader, 512, NULL, infoLog);
+        std::cout << "ERROR::GROUND_SHADER::FRAGMENT::COMPILATION_FAILED\n" << infoLog << std::endl;
+    }
+
+    // Link ground shaders
+    unsigned int groundShaderProgram = glCreateProgram();
+    glAttachShader(groundShaderProgram, groundVertexShader);
+    glAttachShader(groundShaderProgram, groundFragmentShader);
+    glLinkProgram(groundShaderProgram);
+
+    glGetProgramiv(groundShaderProgram, GL_LINK_STATUS, &success);
+    if (!success) {
+        glGetProgramInfoLog(groundShaderProgram, 512, NULL, infoLog);
+        std::cout << "ERROR::GROUND_SHADER::PROGRAM::LINKING_FAILED\n" << infoLog << std::endl;
+    }
+    glDeleteShader(groundVertexShader);
+    glDeleteShader(groundFragmentShader);
+
     // Load your Mixamo character model
     std::cout << "Loading Mixamo Character Model..." << std::endl;
 
-    std::string modelPath = "models/fun_boy.fbx";
+    std::string modelPath = "models/fun_boy2.fbx";
 
     Model character(modelPath);
 
@@ -1231,11 +1440,15 @@ int main() {
     }
     std::cout << "============================\n" << std::endl;
 
+    // Create ground
+    Ground ground;
+
     Animator animator;
 
-    // Set default animation (usually the first one or idle animation)
-    int defaultAnimIndex = 5;
-    animator.SetAnimation(defaultAnimIndex, character);
+    // Set default animation to idle
+    int idleAnimIndex = 8; // idle animation
+    int walkAnimIndex = 3; // walk animation
+    animator.SetAnimation(idleAnimIndex, character);
 
     // Configure global OpenGL state
     glEnable(GL_DEPTH_TEST);
@@ -1246,7 +1459,9 @@ int main() {
 
     // Print enhanced controls
     std::cout << "\n=== ENHANCED ANIMATION CONTROLS ===" << std::endl;
-    std::cout << "WASD: Move character (with smooth rotation)" << std::endl;
+    std::cout << "W: Move forward with walk animation" << std::endl;
+    std::cout << "Release W: Stop moving with idle animation" << std::endl;
+    std::cout << "A/D: Rotate character" << std::endl;
     std::cout << "Arrow Keys: Move camera" << std::endl;
     std::cout << "Mouse: Look around" << std::endl;
     std::cout << "1-9: Play animation temporarily (returns to default)" << std::endl;
@@ -1271,6 +1486,24 @@ int main() {
 
         // Input
         processInput(window);
+
+        // Handle movement-based animation transitions
+        wasMoving = isMoving;
+
+        // Check if W key is pressed for movement
+        isMoving = (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS);
+
+        // Animation transition logic
+        if (isMoving && !wasMoving) {
+            // Started moving - switch to walk animation
+            animator.SetAnimation(walkAnimIndex, character);
+            std::cout << "Started moving - Walk animation" << std::endl;
+        }
+        else if (!isMoving && wasMoving) {
+            // Stopped moving - switch to idle animation
+            animator.SetAnimation(idleAnimIndex, character);
+            std::cout << "Stopped moving - Idle animation" << std::endl;
+        }
 
         // Animation controls - TEMPORARY animations (return to default)
         if (glfwGetKey(window, GLFW_KEY_1) == GLFW_PRESS) {
@@ -1367,7 +1600,6 @@ int main() {
             animator.UpdateAnimation(deltaTime, character);
         }
 
-
         // Update smooth rotation interpolation 
         float rotationDelta = targetRotation - characterRotation;
 
@@ -1400,20 +1632,35 @@ int main() {
         glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        glUseProgram(shaderProgram);
-
         // Set up view and projection matrices
         glm::mat4 projection = glm::perspective(glm::radians(45.0f),
             (float)SCR_WIDTH / (float)SCR_HEIGHT,
             0.1f, 100.0f);
         glm::mat4 view = glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp);
 
+        // Draw ground first
+        glUseProgram(groundShaderProgram);
+        glm::mat4 groundModel = glm::mat4(1.0f);
+        glUniformMatrix4fv(glGetUniformLocation(groundShaderProgram, "projection"), 1, GL_FALSE,
+            glm::value_ptr(projection));
+        glUniformMatrix4fv(glGetUniformLocation(groundShaderProgram, "view"), 1, GL_FALSE,
+            glm::value_ptr(view));
+        glUniformMatrix4fv(glGetUniformLocation(groundShaderProgram, "model"), 1, GL_FALSE,
+            glm::value_ptr(groundModel));
+        glUniform3fv(glGetUniformLocation(groundShaderProgram, "lightPos"), 1, glm::value_ptr(glm::vec3(0.0f, 5.0f, 0.0f)));
+        glUniform3fv(glGetUniformLocation(groundShaderProgram, "lightColor"), 1, glm::value_ptr(glm::vec3(1.0f, 1.0f, 1.0f)));
+        glUniform3fv(glGetUniformLocation(groundShaderProgram, "viewPos"), 1, glm::value_ptr(cameraPos));
+        ground.Draw(groundShaderProgram);
+
+        // Draw character
+        glUseProgram(shaderProgram);
+
         // Create model matrix with character control
         glm::mat4 model = glm::mat4(1.0f);
         model = glm::translate(model, characterPosition);
         model = glm::scale(model, glm::vec3(autoScale));
         model = glm::rotate(model, glm::radians(characterRotation), glm::vec3(0.0f, 1.0f, 0.0f));
-        model = glm::translate(model, -character.getCenter()); // Center the model
+        //model = glm::translate(model, -character.getCenter()); // Center the model
 
         // Set matrices
         glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), 1, GL_FALSE,
@@ -1473,14 +1720,30 @@ void processInput(GLFWwindow* window) {
     float cameraSpeed = movementSpeed * deltaTime;
     float rotationSpeedValue = rotationSpeed * deltaTime;
 
-    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
-        characterPosition += cameraSpeed * glm::vec3(sin(glm::radians(characterRotation)), 0.0f, cos(glm::radians(characterRotation)));
-    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
-        characterPosition -= cameraSpeed * glm::vec3(sin(glm::radians(characterRotation)), 0.0f, cos(glm::radians(characterRotation)));
-    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
+    // Store movement direction
+    glm::vec3 moveDirection = glm::vec3(0.0f);
+
+    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) {
+        moveDirection += glm::vec3(sin(glm::radians(characterRotation)), 0.0f, cos(glm::radians(characterRotation)));
+    }
+    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) {
+        moveDirection -= glm::vec3(sin(glm::radians(characterRotation)), 0.0f, cos(glm::radians(characterRotation)));
+    }
+    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) {
         targetRotation += rotationSpeedValue;
-    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
+    }
+    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) {
         targetRotation -= rotationSpeedValue;
+    }
+
+    // Only move if W is pressed (forward movement)
+    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) {
+        moveDirection = glm::normalize(moveDirection);
+        characterPosition += moveDirection * cameraSpeed;
+
+        // Keep character on ground
+        characterPosition.y = GROUND_LEVEL;
+    }
 
     targetRotation = fmod(targetRotation, 360.0f);
     if (targetRotation < 0.0f) targetRotation += 360.0f;
